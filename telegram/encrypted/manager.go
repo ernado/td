@@ -113,7 +113,7 @@ func (m *Manager) OnEncryption(ctx context.Context, e tg.Entities, update *tg.Up
 			}
 
 			if err := m.storage.Save(ctx, chat); err != nil {
-				return xerrors.Errorf("save chat: %w")
+				return xerrors.Errorf("save chat: %w", err)
 			}
 
 			if err := m.created(ctx, chat); err != nil {
