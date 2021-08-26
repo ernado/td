@@ -12,10 +12,14 @@ import (
 	"github.com/gotd/td/tg"
 )
 
-// requestChat requests new encrypted chat.
+type request struct {
+	result chan tg.EncryptedChatClass
+}
+
+// RequestChat requests new encrypted chat.
 //
 // See https://core.telegram.org/api/end-to-end#sending-a-request.
-func (m *Manager) requestChat(ctx context.Context, user tg.InputUserClass) (Chat, error) {
+func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat, error) {
 	a, dhCfg, err := m.initDH(ctx)
 	if err != nil {
 		return Chat{}, xerrors.Errorf("init DH: %w", err)
@@ -30,6 +34,7 @@ func (m *Manager) requestChat(ctx context.Context, user tg.InputUserClass) (Chat
 		return Chat{}, xerrors.Errorf("generate random ID: %w", err)
 	}
 
+	m.logger.Debug("Request chat", zap.Int64("random_id", randomID))
 	m.requestsMux.Lock()
 	requested, err := m.raw.MessagesRequestEncryption(ctx, &tg.MessagesRequestEncryptionRequest{
 		UserID:   user,

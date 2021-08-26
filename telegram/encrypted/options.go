@@ -8,6 +8,7 @@ import (
 
 	"github.com/gotd/td/internal/crypto"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tg/e2e"
 )
 
 type (
@@ -18,7 +19,7 @@ type (
 	CreatedHandler func(context.Context, Chat) error
 
 	// MessageHandler is an encrypted message event handler type.
-	MessageHandler func(context.Context, Chat, []byte) error
+	MessageHandler func(context.Context, Chat, e2e.DecryptedMessageLayer) error
 )
 
 // Options is Manager options.
@@ -51,7 +52,7 @@ func (m *Options) setDefaults() {
 		}
 	}
 	if m.Message == nil {
-		m.Message = func(context.Context, Chat, []byte) error {
+		m.Message = func(context.Context, Chat, e2e.DecryptedMessageLayer) error {
 			// No-op.
 			return nil
 		}
