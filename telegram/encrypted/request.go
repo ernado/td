@@ -45,12 +45,18 @@ func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat
 		m.requestsMux.Unlock()
 		return 0, xerrors.Errorf("request chat: %w", err)
 	}
+	chatID := requested.GetID()
 
 	result := make(chan tg.EncryptedChatClass, 1)
-	m.requests[requested.GetID()] = request{
+	m.requests[chatID] = request{
 		result: result,
 	}
 	m.requestsMux.Unlock()
+	defer func() {
+		m.requestsMux.Lock()
+		delete(m.requests, chatID)
+		m.requestsMux.Unlock()
+	}()
 
 	select {
 	case <-ctx.Done():
