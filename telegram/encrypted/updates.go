@@ -34,10 +34,10 @@ func (m *Manager) Register(d tg.UpdateDispatcher) {
 
 func (m *Manager) OnNewEncryptedMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewEncryptedMessage) error {
 	chatID := u.Message.GetChatID()
-	m.logger.Debug("Received encrypted message", zap.Int("chat_id", chatID))
 
-	chat, err := m.storage.FindByID(ctx, chatID)
+	chat, err := m.storage.FindByID(ctx, ChatID(chatID))
 	if err != nil {
+		m.logger.Info("Received encrypted message from unknown chat", zap.Int("chat_id", chatID))
 		return xerrors.Errorf("find chat %d: %w", chatID, err)
 	}
 
@@ -51,7 +51,46 @@ func (m *Manager) OnNewEncryptedMessage(ctx context.Context, e tg.Entities, u *t
 		return xerrors.Errorf("decode layer: %w", err)
 	}
 
-	return m.message(ctx, chat, layer)
+	return m.handleMessage(ctx, chat, layer)
+}
+
+func (m *Manager) handleMessage(ctx context.Context, chat Chat, layer e2e.DecryptedMessageLayer) error {
+	chatID := int(chat.ID)
+	logger := m.logger.With(zap.Int("chat_id", chatID))
+
+	logger.Debug("Received encrypted message",
+		zap.Int("in_seq", layer.InSeqNo),
+		zap.Int("out_seq", layer.OutSeqNo),
+		zap.String("type", fmt.Sprintf("%T", layer.Message)),
+	)
+
+	// See https://core.telegram.org/api/end-to-end/seq_no#checking-out-seq-no.
+	//
+	// If the received out_seq_no<=C, the local client must drop the message (repeated message).
+	// The client should not check the contents of the message because the original message could have
+	// been deleted (see Deleting unacknowledged messages).
+	inSeq, _ := chat.seqNo()
+	if out := layer.OutSeqNo; out > 0 && inSeq > 0 && out <= inSeq {
+		return nil
+	}
+
+	chat.InSeq++
+	inSeq, _ = chat.seqNo()
+	// If the received out_seq_no>C+1, it most likely means that the server left out some messages due
+	// to a technical failure or due to the messages becoming obsolete. A temporary solution to this is
+	// to simply abort the secret chat. But since this may cause some existing older secret chats to be aborted,
+	// it is strongly recommended for the client to properly handle such seq_no gaps. Note that in_seq_no is not
+	// increased upon receipt of such a message; it is advanced only after all preceding gaps are filled.
+	if layer.OutSeqNo > inSeq {
+		// TODO(tdakkota): request resend.
+		logger.Warn("E2E chat gap", zap.Int("local", inSeq))
+	}
+
+	if err := m.storage.Save(ctx, chat); err != nil {
+		return xerrors.Errorf("save chat %d: %w", chatID, err)
+	}
+
+	return m.message(ctx, chat, layer.Message)
 }
 
 func (m *Manager) OnEncryption(ctx context.Context, e tg.Entities, update *tg.UpdateEncryption) error {

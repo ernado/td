@@ -50,30 +50,84 @@ func NewManager(raw *tg.Client, d tg.UpdateDispatcher, opts Options) *Manager {
 	return m
 }
 
-func (m *Manager) Send(ctx context.Context, e Chat, data *e2e.DecryptedMessageLayer) error {
+const latestLayer = 101
+
+func (m *Manager) Send(ctx context.Context, chatID ChatID, msg e2e.DecryptedMessageClass) error {
+	logger := m.logger.With(zap.Int("chat_id", int(chatID)))
+
+	chat, err := m.storage.FindByID(ctx, chatID)
+	if err != nil {
+		return xerrors.Errorf("find chat %d: %w", chatID, err)
+	}
+
+	randomBytes := make([]byte, 32)
+	if _, err := io.ReadFull(m.rand, randomBytes); err != nil {
+		return xerrors.Errorf("read random bytes: %w", err)
+	}
+
+	layer := chat.Layer
+	if layer == 0 {
+		layer = latestLayer
+	}
+
+	inSeq, outSeq := chat.seqNo()
+	data := e2e.DecryptedMessageLayer{
+		RandomBytes: randomBytes,
+		Layer:       layer,
+		InSeqNo:     inSeq,
+		OutSeqNo:    outSeq,
+		Message:     msg,
+	}
+	chat.OutSeq++
+
 	b := bin.Buffer{}
 	if err := data.Encode(&b); err != nil {
 		return xerrors.Errorf("encode layer: %w", err)
 	}
 
+	logger.Debug("Send encrypted message",
+		zap.Int("in_seq", data.InSeqNo),
+		zap.Int("out_seq", data.OutSeqNo),
+	)
+	if _, err := m.sendEncrypted(ctx, chat, false, &b); err != nil {
+		return err
+	}
+
+	if err := m.storage.Save(ctx, chat); err != nil {
+		return xerrors.Errorf("save chat: %w", err)
+	}
+
+	return nil
+}
+
+func (m *Manager) sendEncrypted(
+	ctx context.Context,
+	e Chat,
+	silent bool,
+	b *bin.Buffer,
+) (tg.MessagesSentEncryptedMessageClass, error) {
 	encrypted, err := e.Encrypt(m.rand, b.Buf)
 	if err != nil {
-		return xerrors.Errorf("encrypt: %w", err)
+		return nil, xerrors.Errorf("encrypt: %w", err)
 	}
 
 	randomID, err := crypto.RandInt64(m.rand)
 	if err != nil {
-		return xerrors.Errorf("generate random_id: %w", err)
+		return nil, xerrors.Errorf("generate random_id: %w", err)
 	}
 
-	_, err = m.raw.MessagesSendEncrypted(ctx, &tg.MessagesSendEncryptedRequest{
-		Silent: false,
+	r, err := m.raw.MessagesSendEncrypted(ctx, &tg.MessagesSendEncryptedRequest{
+		Silent: silent,
 		Peer: tg.InputEncryptedChat{
-			ChatID:     e.ID,
+			ChatID:     int(e.ID),
 			AccessHash: e.AccessHash,
 		},
 		RandomID: randomID,
 		Data:     encrypted,
 	})
-	return err
+	if err != nil {
+		return nil, xerrors.Errorf("send encrypted: %w", err)
+	}
+
+	return r, nil
 }

@@ -19,10 +19,10 @@ type request struct {
 // RequestChat requests new encrypted chat.
 //
 // See https://core.telegram.org/api/end-to-end#sending-a-request.
-func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat, error) {
+func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (ChatID, error) {
 	a, dhCfg, err := m.initDH(ctx)
 	if err != nil {
-		return Chat{}, xerrors.Errorf("init DH: %w", err)
+		return 0, xerrors.Errorf("init DH: %w", err)
 	}
 
 	g := dhCfg.GBig
@@ -31,7 +31,7 @@ func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat
 
 	randomID, err := crypto.RandInt64(m.rand)
 	if err != nil {
-		return Chat{}, xerrors.Errorf("generate random ID: %w", err)
+		return 0, xerrors.Errorf("generate random ID: %w", err)
 	}
 
 	m.logger.Debug("Request chat", zap.Int64("random_id", randomID))
@@ -43,7 +43,7 @@ func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat
 	})
 	if err != nil {
 		m.requestsMux.Unlock()
-		return Chat{}, xerrors.Errorf("request chat: %w", err)
+		return 0, xerrors.Errorf("request chat: %w", err)
 	}
 
 	result := make(chan tg.EncryptedChatClass, 1)
@@ -54,7 +54,7 @@ func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat
 
 	select {
 	case <-ctx.Done():
-		return Chat{}, ctx.Err()
+		return 0, ctx.Err()
 	case r := <-result:
 		switch c := r.(type) {
 		case *tg.EncryptedChat:
@@ -67,23 +67,26 @@ func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat
 
 			if getKeyFingerprint(key) != c.KeyFingerprint {
 				err := xerrors.New("key fingerprint mismatch")
-				return Chat{}, multierr.Append(err, m.discardChat(ctx, c.ID))
+				return 0, multierr.Append(err, m.discardChat(ctx, c.ID))
 			}
 
 			chat := Chat{
-				ID:            c.ID,
+				ID:            ChatID(c.ID),
 				AccessHash:    c.AccessHash,
+				Layer:         0,
 				Date:          c.Date,
 				AdminID:       c.AdminID,
 				ParticipantID: c.ParticipantID,
 				Originator:    true,
+				InSeq:         0,
+				OutSeq:        0,
 				Key:           key,
 			}
-			return chat, m.storage.Save(ctx, chat)
+			return chat.ID, m.storage.Save(ctx, chat)
 		case *tg.EncryptedChatDiscarded:
-			return Chat{}, &ChatDiscardedError{Chat: c}
+			return 0, &ChatDiscardedError{Chat: c}
 		default:
-			return Chat{}, xerrors.Errorf("unexpected type %T", c)
+			return 0, xerrors.Errorf("unexpected type %T", c)
 		}
 	}
 }

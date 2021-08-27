@@ -19,7 +19,7 @@ type (
 	CreatedHandler func(context.Context, Chat) error
 
 	// MessageHandler is an encrypted message event handler type.
-	MessageHandler func(context.Context, Chat, e2e.DecryptedMessageLayer) error
+	MessageHandler func(context.Context, Chat, e2e.DecryptedMessageClass) error
 )
 
 // Options is Manager options.
@@ -52,7 +52,7 @@ func (m *Options) setDefaults() {
 		}
 	}
 	if m.Message == nil {
-		m.Message = func(context.Context, Chat, e2e.DecryptedMessageLayer) error {
+		m.Message = func(context.Context, Chat, e2e.DecryptedMessageClass) error {
 			// No-op.
 			return nil
 		}

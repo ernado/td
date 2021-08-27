@@ -13,7 +13,7 @@ import (
 
 // acceptChat generates key and accepts chat request.
 //
-// See https://core.tlgr.org/api/end-to-end#accepting-a-request.
+// See https://core.telegram.org/api/end-to-end#accepting-a-request.
 func (m *Manager) acceptChat(ctx context.Context, req *tg.EncryptedChatRequested) (Chat, error) {
 	m.logger.Debug("Accept chat", zap.Int("id", req.ID))
 
@@ -48,12 +48,15 @@ func (m *Manager) acceptChat(ctx context.Context, req *tg.EncryptedChatRequested
 	switch chat := c.(type) {
 	case *tg.EncryptedChat:
 		return Chat{
-			ID:            chat.ID,
+			ID:            ChatID(chat.ID),
 			AccessHash:    chat.AccessHash,
+			Layer:         0,
 			Date:          chat.Date,
 			AdminID:       chat.AdminID,
 			ParticipantID: chat.ParticipantID,
 			Originator:    false,
+			InSeq:         0,
+			OutSeq:        0,
 			Key:           key,
 		}, nil
 	case *tg.EncryptedChatDiscarded:

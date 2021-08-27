@@ -17,12 +17,17 @@ func getKeyFingerprint(key crypto.AuthKey) int64 {
 	return int64(binary.LittleEndian.Uint64(key.ID[:]))
 }
 
+// ChatID is a type which represents chat ID.
+type ChatID int
+
 // Chat is an encrypted chat metadata structure.
 type Chat struct {
 	// Chat ID.
-	ID int
+	ID ChatID
 	// AccessHash is a chat access hash.
 	AccessHash int64
+	// Layer is a TL encrypted schema layer version.
+	Layer int
 	// Date chat was created.
 	Date int
 	// AdminID is a chat creator ID.
@@ -31,6 +36,12 @@ type Chat struct {
 	ParticipantID int
 	// Originator denotes current user is creator.
 	Originator bool
+
+	// InSeq is an incoming message sequence.
+	InSeq int
+	// OutSeq is a outgoing message sequence.
+	OutSeq int
+
 	// Key is message encryption key.
 	Key crypto.AuthKey
 }
@@ -49,6 +60,17 @@ func (c Chat) decryptSide() crypto.Side {
 		s = crypto.Server
 	}
 	return s
+}
+
+func (c Chat) seqNo() (seqIn, seqOut int) {
+	if c.Originator {
+		seqIn = 2 * c.InSeq
+		seqOut = 2*c.OutSeq + 1
+	} else {
+		seqIn = 2*c.InSeq + 1
+		seqOut = 2 * c.OutSeq
+	}
+	return seqIn, seqOut
 }
 
 func (c Chat) Decrypt(data []byte) ([]byte, error) {
