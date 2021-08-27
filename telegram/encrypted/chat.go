@@ -1,14 +1,8 @@
 package encrypted
 
 import (
-	"crypto/aes"
 	"encoding/binary"
-	"io"
 
-	"golang.org/x/xerrors"
-
-	"github.com/gotd/ige"
-	"github.com/gotd/td/bin"
 	"github.com/gotd/td/internal/crypto"
 )
 
@@ -17,13 +11,10 @@ func getKeyFingerprint(key crypto.AuthKey) int64 {
 	return int64(binary.LittleEndian.Uint64(key.ID[:]))
 }
 
-// ChatID is a type which represents chat ID.
-type ChatID int
-
 // Chat is an encrypted chat metadata structure.
 type Chat struct {
 	// Chat ID.
-	ID ChatID
+	ID int
 	// AccessHash is a chat access hash.
 	AccessHash int64
 	// Layer is a TL encrypted schema layer version.
@@ -46,107 +37,66 @@ type Chat struct {
 	Key crypto.AuthKey
 }
 
-func (c Chat) encryptSide() crypto.Side {
-	s := crypto.Server
+func (c Chat) seqNo() (in, out int) {
 	if c.Originator {
-		s = crypto.Client
-	}
-	return s
-}
-
-func (c Chat) decryptSide() crypto.Side {
-	s := crypto.Client
-	if c.Originator {
-		s = crypto.Server
-	}
-	return s
-}
-
-func (c Chat) seqNo() (seqIn, seqOut int) {
-	if c.Originator {
-		seqIn = 2 * c.InSeq
-		seqOut = 2*c.OutSeq + 1
+		in = 2 * c.InSeq
+		out = 2*c.OutSeq + 1
 	} else {
-		seqIn = 2*c.InSeq + 1
-		seqOut = 2 * c.OutSeq
+		in = 2*c.InSeq + 1
+		out = 2 * c.OutSeq
 	}
-	return seqIn, seqOut
+	return in, out
 }
 
-func (c Chat) Decrypt(data []byte) ([]byte, error) {
-	// TODO(tdakkota): optimize, maybe do better buffer API.
-	var (
-		msg  crypto.EncryptedMessage
-		side = c.decryptSide()
-	)
-
-	if err := msg.DecodeWithoutCopy(&bin.Buffer{Buf: data}); err != nil {
-		return nil, err
-	}
-
-	key, iv := crypto.Keys(c.Key.Value, msg.MsgKey, side)
-	cipher, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil, err
-	}
-	plaintext := make([]byte, len(msg.EncryptedData))
-	ige.DecryptBlocks(cipher, iv[:], plaintext, msg.EncryptedData)
-
-	buf := bin.Buffer{Buf: plaintext}
-	messageDataLen, err := buf.Int()
-	if err != nil {
-		return nil, xerrors.Errorf("get messageDataLen: %w", err)
-	}
-	if l := buf.Len(); l < messageDataLen {
-		return nil, xerrors.Errorf("buffer too small (%d < %d)", l, messageDataLen)
-	}
-
-	return buf.Buf[:messageDataLen], nil
+func (c *Chat) nextMessage() (in, out int) {
+	in, out = c.seqNo()
+	c.OutSeq++
+	return in, out
 }
 
-func countPadding(l int) int { return 16 + (16 - (l % 16)) }
+type consumeResult int
 
-func (c Chat) padBuffer(rand io.Reader, data []byte) (*bin.Buffer, error) {
-	length := len(data) + 4
-	padding := countPadding(length)
+const (
+	skipMessage    consumeResult = -1
+	consumeMessage consumeResult = 0
+	fillGap        consumeResult = 1
+	abortChat      consumeResult = 2
+)
 
-	padded := &bin.Buffer{Buf: make([]byte, 0, length+padding)}
-	padded.PutInt(length)
-	padded.Put(data)
+func (c *Chat) consumeMessage(hisInSeq, hisOutSeq int) consumeResult {
+	// See https://core.telegram.org/api/end-to-end/seq_no#checking-out-seq-no.
+	//
+	// If the received out_seq_no<=C, the local client must drop the message (repeated message).
+	// The client should not check the contents of the message because the original message could have
+	// been deleted (see Deleting unacknowledged messages).
 
-	if _, err := io.ReadFull(rand, padded.Buf[length:]); err != nil {
-		return nil, err
+	myInSeq, myOutSeq := c.seqNo()
+	if hisOutSeq < myInSeq {
+		return skipMessage
 	}
-	padded.Buf = padded.Buf[:length+padding]
 
-	return padded, nil
-}
-
-func (c Chat) Encrypt(rand io.Reader, data []byte) ([]byte, error) {
-	// TODO(tdakkota): optimize, maybe do better buffer API.
-	padded, err := c.padBuffer(rand, data)
-	if err != nil {
-		return nil, err
+	// If the received out_seq_no>C+1, it most likely means that the server left out some messages due
+	// to a technical failure or due to the messages becoming obsolete. A temporary solution to this is
+	// to simply abort the secret chat. But since this may cause some existing older secret chats to be aborted,
+	// it is strongly recommended for the client to properly handle such seq_no gaps. Note that in_seq_no is not
+	// increased upon receipt of such a message; it is advanced only after all preceding gaps are filled.
+	if hisOutSeq > myInSeq {
+		return fillGap
 	}
-	side := c.encryptSide()
+	c.InSeq++
 
-	messageKey := crypto.MessageKey(c.Key.Value, padded.Buf, side)
-	key, iv := crypto.Keys(c.Key.Value, messageKey, side)
-	aesBlock, err := aes.NewCipher(key[:])
-	if err != nil {
-		return nil, err
+	// See https://core.telegram.org/api/end-to-end/seq_no#checking-and-handling-in-seq-no.
+	//
+	// - in_seq_no must form a non-decreasing sequence of non-negative integer numbers.
+	// - in_seq_no must be valid at the moment of receiving the message, that is, if D
+	// is the out_seq_no of last message we sent, the received in_seq_no should not
+	// be greater than D + 1.
+	//
+	if hisInSeq < myOutSeq-2 || hisInSeq > myOutSeq {
+		// If in_seq_no contradicts these criteria, the local client is required
+		// to immediately abort the secret chat.
+		return abortChat
 	}
-	msg := crypto.EncryptedMessage{
-		AuthKeyID:     c.Key.ID,
-		MsgKey:        messageKey,
-		EncryptedData: make([]byte, len(padded.Buf)),
-	}
-	ige.EncryptBlocks(aesBlock, iv[:], msg.EncryptedData, padded.Buf)
 
-	buf := bin.Buffer{}
-	if err := msg.Encode(&buf); err != nil {
-		return nil, err
-	}
-	return buf.Buf, nil
-
+	return consumeMessage
 }

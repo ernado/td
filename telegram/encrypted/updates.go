@@ -12,7 +12,7 @@ import (
 	"github.com/gotd/td/tg/e2e"
 )
 
-func (m *Manager) sendResult(id int, c tg.EncryptedChatClass) {
+func (m *Manager) notifyNewChat(id int, c tg.EncryptedChatClass) {
 	m.requestsMux.Lock()
 	req, ok := m.requests[id]
 	delete(m.requests, id)
@@ -32,16 +32,16 @@ func (m *Manager) Register(d tg.UpdateDispatcher) {
 	d.OnNewEncryptedMessage(m.OnNewEncryptedMessage)
 }
 
-func (m *Manager) OnNewEncryptedMessage(ctx context.Context, e tg.Entities, u *tg.UpdateNewEncryptedMessage) error {
+func (m *Manager) OnNewEncryptedMessage(ctx context.Context, _ tg.Entities, u *tg.UpdateNewEncryptedMessage) error {
 	chatID := u.Message.GetChatID()
 
-	chat, err := m.storage.FindByID(ctx, ChatID(chatID))
+	chat, err := m.storage.FindByID(ctx, chatID)
 	if err != nil {
 		m.logger.Info("Received encrypted message from unknown chat", zap.Int("chat_id", chatID))
 		return xerrors.Errorf("find chat %d: %w", chatID, err)
 	}
 
-	data, err := chat.Decrypt(u.Message.GetBytes())
+	data, err := chat.decrypt(u.Message.GetBytes())
 	if err != nil {
 		return xerrors.Errorf("encrypt: %w", err)
 	}
@@ -55,39 +55,33 @@ func (m *Manager) OnNewEncryptedMessage(ctx context.Context, e tg.Entities, u *t
 }
 
 func (m *Manager) handleMessage(ctx context.Context, chat Chat, layer e2e.DecryptedMessageLayer) error {
-	chatID := int(chat.ID)
-	logger := m.logger.With(zap.Int("chat_id", chatID))
+	myIn, myOut := chat.seqNo()
+	logger := m.logger.With(
+		zap.Int("chat_id", chat.ID),
+		zap.Int("his_in_seq", layer.InSeqNo),
+		zap.Int("his_out_seq", layer.OutSeqNo),
+		zap.Int("my_in_seq", myIn),
+		zap.Int("my_out_seq", myOut),
+	)
 
 	logger.Debug("Received encrypted message",
-		zap.Int("in_seq", layer.InSeqNo),
-		zap.Int("out_seq", layer.OutSeqNo),
 		zap.String("type", fmt.Sprintf("%T", layer.Message)),
 	)
 
-	// See https://core.telegram.org/api/end-to-end/seq_no#checking-out-seq-no.
-	//
-	// If the received out_seq_no<=C, the local client must drop the message (repeated message).
-	// The client should not check the contents of the message because the original message could have
-	// been deleted (see Deleting unacknowledged messages).
-	inSeq, _ := chat.seqNo()
-	if out := layer.OutSeqNo; out > 0 && inSeq > 0 && out <= inSeq {
+	switch chat.consumeMessage(layer.InSeqNo, layer.OutSeqNo) {
+	case skipMessage:
+		logger.Debug("Skip duplicate message")
 		return nil
-	}
-
-	chat.InSeq++
-	inSeq, _ = chat.seqNo()
-	// If the received out_seq_no>C+1, it most likely means that the server left out some messages due
-	// to a technical failure or due to the messages becoming obsolete. A temporary solution to this is
-	// to simply abort the secret chat. But since this may cause some existing older secret chats to be aborted,
-	// it is strongly recommended for the client to properly handle such seq_no gaps. Note that in_seq_no is not
-	// increased upon receipt of such a message; it is advanced only after all preceding gaps are filled.
-	if layer.OutSeqNo > inSeq {
-		// TODO(tdakkota): request resend.
-		logger.Warn("E2E chat gap", zap.Int("local", inSeq))
+	case fillGap:
+		logger.Debug("Fill gap")
+	// TODO(tdakkota): request resend.
+	case abortChat:
+		logger.Debug("Abort chat due to invalid in_seq")
+	default:
 	}
 
 	if err := m.storage.Save(ctx, chat); err != nil {
-		return xerrors.Errorf("save chat %d: %w", chatID, err)
+		return xerrors.Errorf("save chat %d: %w", chat.ID, err)
 	}
 
 	return m.message(ctx, chat, layer.Message)
@@ -97,11 +91,11 @@ func (m *Manager) OnEncryption(ctx context.Context, e tg.Entities, update *tg.Up
 	switch c := update.Chat.(type) {
 	case *tg.EncryptedChat:
 		m.logger.Debug("Chat accepted", zap.Int("chat_id", c.ID))
-		m.sendResult(c.ID, c)
+		m.notifyNewChat(c.ID, c)
 		return nil
 	case *tg.EncryptedChatDiscarded:
 		m.logger.Debug("Chat discarded", zap.Int("chat_id", c.ID))
-		m.sendResult(c.ID, c)
+		m.notifyNewChat(c.ID, c)
 		return nil
 	case *tg.EncryptedChatRequested:
 		accepted, err := m.accept(ctx, e, c)
@@ -126,7 +120,7 @@ func (m *Manager) OnEncryption(ctx context.Context, e tg.Entities, update *tg.Up
 			return nil
 		}
 
-		return m.rejectChat(ctx, c)
+		return m.discardChat(ctx, c.ID)
 	default:
 		m.logger.Warn("Unexpected type", zap.String("type", fmt.Sprintf("%T", c)))
 		return nil

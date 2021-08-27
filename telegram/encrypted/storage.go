@@ -9,8 +9,8 @@ import (
 // ChatStorage contains encrypted chats.
 type ChatStorage interface {
 	Save(ctx context.Context, chat Chat) error
-	FindByID(ctx context.Context, id ChatID) (Chat, error)
-	Discard(ctx context.Context, id ChatID) error
+	FindByID(ctx context.Context, id int) (Chat, error)
+	Discard(ctx context.Context, id int) error
 	ForEach(ctx context.Context, cb func(ctx context.Context, chat Chat) error) error
 }
 
@@ -21,14 +21,14 @@ var _ ChatStorage = (*InmemoryStorage)(nil)
 
 // InmemoryStorage is an in-memory implementation of ChatStorage.
 type InmemoryStorage struct {
-	chats map[ChatID]Chat
+	chats map[int]Chat
 	mux   sync.Mutex
 }
 
 // NewInmemoryStorage creates new InmemoryStorage.
 func NewInmemoryStorage() *InmemoryStorage {
 	return &InmemoryStorage{
-		chats: map[ChatID]Chat{},
+		chats: map[int]Chat{},
 	}
 }
 
@@ -42,7 +42,7 @@ func (i *InmemoryStorage) Save(ctx context.Context, chat Chat) error {
 }
 
 // FindByID finds chat by ID.
-func (i *InmemoryStorage) FindByID(ctx context.Context, id ChatID) (Chat, error) {
+func (i *InmemoryStorage) FindByID(ctx context.Context, id int) (Chat, error) {
 	i.mux.Lock()
 	defer i.mux.Unlock()
 
@@ -54,7 +54,7 @@ func (i *InmemoryStorage) FindByID(ctx context.Context, id ChatID) (Chat, error)
 }
 
 // Discard deletes chat from storage.
-func (i *InmemoryStorage) Discard(ctx context.Context, id ChatID) error {
+func (i *InmemoryStorage) Discard(ctx context.Context, id int) error {
 	i.mux.Lock()
 	defer i.mux.Unlock()
 

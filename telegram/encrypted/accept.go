@@ -47,29 +47,21 @@ func (m *Manager) acceptChat(ctx context.Context, req *tg.EncryptedChatRequested
 
 	switch chat := c.(type) {
 	case *tg.EncryptedChat:
-		return Chat{
-			ID:            ChatID(chat.ID),
+		accepted := Chat{
+			ID:            chat.ID,
 			AccessHash:    chat.AccessHash,
 			Layer:         0,
 			Date:          chat.Date,
 			AdminID:       chat.AdminID,
 			ParticipantID: chat.ParticipantID,
 			Originator:    false,
-			InSeq:         0,
 			OutSeq:        0,
 			Key:           key,
-		}, nil
+		}
+		return accepted, nil
 	case *tg.EncryptedChatDiscarded:
 		return Chat{}, &ChatDiscardedError{Chat: chat}
 	default:
 		return Chat{}, xerrors.Errorf("unexpected type %T", chat)
 	}
-}
-
-func (m *Manager) rejectChat(ctx context.Context, req *tg.EncryptedChatRequested) error {
-	m.logger.Debug("Reject chat", zap.Int("id", req.ID))
-	_, err := m.raw.MessagesDiscardEncryption(ctx, &tg.MessagesDiscardEncryptionRequest{
-		ChatID: req.ID,
-	})
-	return err
 }

@@ -16,10 +16,10 @@ type request struct {
 	result chan tg.EncryptedChatClass
 }
 
-// RequestChat requests new encrypted chat.
+// RequestChat requests new encrypted chat and returns chat ID.
 //
 // See https://core.telegram.org/api/end-to-end#sending-a-request.
-func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (ChatID, error) {
+func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (int, error) {
 	a, dhCfg, err := m.initDH(ctx)
 	if err != nil {
 		return 0, xerrors.Errorf("init DH: %w", err)
@@ -73,18 +73,17 @@ func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat
 
 			if getKeyFingerprint(key) != c.KeyFingerprint {
 				err := xerrors.New("key fingerprint mismatch")
-				return 0, multierr.Append(err, m.discardChat(ctx, c.ID))
+				return 0, multierr.Append(err, m.discardChat(ctx, chatID))
 			}
 
 			chat := Chat{
-				ID:            ChatID(c.ID),
+				ID:            chatID,
 				AccessHash:    c.AccessHash,
 				Layer:         0,
 				Date:          c.Date,
 				AdminID:       c.AdminID,
 				ParticipantID: c.ParticipantID,
 				Originator:    true,
-				InSeq:         0,
 				OutSeq:        0,
 				Key:           key,
 			}
@@ -95,12 +94,4 @@ func (m *Manager) RequestChat(ctx context.Context, user tg.InputUserClass) (Chat
 			return 0, xerrors.Errorf("unexpected type %T", c)
 		}
 	}
-}
-
-func (m *Manager) discardChat(ctx context.Context, id int) error {
-	m.logger.Debug("Discard chat", zap.Int("id", id))
-	_, err := m.raw.MessagesDiscardEncryption(ctx, &tg.MessagesDiscardEncryptionRequest{
-		ChatID: id,
-	})
-	return err
 }
