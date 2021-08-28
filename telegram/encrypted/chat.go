@@ -29,14 +29,20 @@ type Chat struct {
 	Originator bool
 
 	// InSeq is an incoming message sequence.
+	// InSeq stored as total number of all consumed messages.
 	InSeq int
-	// OutSeq is a outgoing message sequence.
+	// OutSeq is an outgoing message sequence.
+	// InSeq stored as total number of all sent messages.
 	OutSeq int
+	// HisInSeq is an incoming message sequence of other parity.
+	// Need for security checks.
+	HisInSeq int
 
 	// Key is message encryption key.
 	Key crypto.AuthKey
 }
 
+// seqNo returns a pair of incoming and outgoing messages sequence numbers.
 func (c Chat) seqNo() (in, out int) {
 	if c.Originator {
 		in = 2 * c.InSeq
@@ -69,7 +75,8 @@ func (c *Chat) consumeMessage(hisInSeq, hisOutSeq int) consumeResult {
 	// If the received out_seq_no<=C, the local client must drop the message (repeated message).
 	// The client should not check the contents of the message because the original message could have
 	// been deleted (see Deleting unacknowledged messages).
-
+	//
+	// We store C+1, so check < instead of <=.
 	myInSeq, myOutSeq := c.seqNo()
 	if hisOutSeq < myInSeq {
 		return skipMessage
@@ -88,11 +95,16 @@ func (c *Chat) consumeMessage(hisInSeq, hisOutSeq int) consumeResult {
 	// See https://core.telegram.org/api/end-to-end/seq_no#checking-and-handling-in-seq-no.
 	//
 	// - in_seq_no must form a non-decreasing sequence of non-negative integer numbers.
+	if hisInSeq < 0 || (c.HisInSeq > 0 && hisInSeq < c.HisInSeq) {
+		// If in_seq_no contradicts these criteria, the local client is required
+		// to immediately abort the secret chat.
+		return abortChat
+	}
+	c.HisInSeq = hisInSeq
 	// - in_seq_no must be valid at the moment of receiving the message, that is, if D
 	// is the out_seq_no of last message we sent, the received in_seq_no should not
 	// be greater than D + 1.
-	//
-	if hisInSeq < myOutSeq-2 || hisInSeq > myOutSeq {
+	if hisInSeq > myOutSeq {
 		// If in_seq_no contradicts these criteria, the local client is required
 		// to immediately abort the secret chat.
 		return abortChat

@@ -20,6 +20,7 @@ func TestChat_consumeMessage(t *testing.T) {
 		a.Equal(fillGap, ch.consumeMessage(1, 6))
 		ch.InSeq = 4 // fill gap
 		a.Equal(abortChat, ch.consumeMessage(3, 8))
+		a.Equal(abortChat, ch.consumeMessage(-1, 10))
 	})
 	t.Run("NotOriginator", func(t *testing.T) {
 		a := require.New(t)
@@ -33,6 +34,7 @@ func TestChat_consumeMessage(t *testing.T) {
 		a.Equal(fillGap, ch.consumeMessage(0, 7))
 		ch.InSeq = 4 // fill gap
 		a.Equal(abortChat, ch.consumeMessage(2, 9))
+		a.Equal(abortChat, ch.consumeMessage(-1, 11))
 	})
 }
 
