@@ -25,6 +25,11 @@ type Suite struct {
 	usedMux sync.Mutex
 }
 
+// Logger returns Suite logger.
+func (s *Suite) Logger() *zap.Logger {
+	return s.logger
+}
+
 // NewSuite creates new Suite.
 func NewSuite(tb require.TestingT, config TestOptions) *Suite {
 	config.setDefaults()
